@@ -3,3 +3,5 @@
 !flake.lock
 .direnv
 result
+# rust
+target
