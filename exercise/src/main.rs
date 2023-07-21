@@ -1,71 +1,53 @@
-pub fn luhn(cc_number: &str) -> bool {
-    let mut digits = str_into_digits(cc_number);
-    if digits.len() < 2 {
+pub fn prefix_matches(prefix: &str, request_path: &str) -> bool {
+    if prefix.len() > request_path.len() {
         return false;
     }
 
-    for d in digits.iter_mut().rev().skip(1).step_by(2) {
-        let mut doubled = (*d) * 2;
-        let mut sum = 0;
-        while doubled != 0 {
-            sum += doubled % 10;
-            doubled /= 10;
-        }
-        *d = sum;
-    }
-
-    let sum_of_all: u32 = digits.iter().sum();
-    sum_of_all % 10 == 0
-}
-
-fn str_into_digits(s: &str) -> Vec<u32> {
-    let mut digits = Vec::new();
-    for c in s.chars() {
-        match c.to_digit(10) {
-            Some(d) => digits.push(d),
-            None => (),
+    let mut prefix = prefix.split('/');
+    let request_path = request_path.split('/');
+    for r in request_path {
+        match prefix.next() {
+            Some(p) if p == r => continue,
+            Some(p) if p == "*" => continue,
+            None => return true,
+            _ => return false,
         }
     }
-    digits
+    true
 }
 
 #[test]
-fn test_non_digit_cc_number() {
-    assert!(!luhn("foo"));
+fn test_matches_without_wildcard() {
+    assert!(prefix_matches("/v1/publishers", "/v1/publishers"));
+    assert!(prefix_matches("/v1/publishers", "/v1/publishers/abc-123"));
+    assert!(prefix_matches("/v1/publishers", "/v1/publishers/abc/books"));
+
+    assert!(!prefix_matches("/v1/publishers", "/v1"));
+    assert!(!prefix_matches("/v1/publishers", "/v1/publishersBooks"));
+    assert!(!prefix_matches("/v1/publishers", "/v1/parent/publishers"));
 }
 
 #[test]
-fn test_empty_cc_number() {
-    assert!(!luhn(""));
-    assert!(!luhn(" "));
-    assert!(!luhn("  "));
-    assert!(!luhn("    "));
-}
+fn test_matches_with_wildcard() {
+    assert!(prefix_matches(
+        "/v1/publishers/*/books",
+        "/v1/publishers/foo/books"
+    ));
+    assert!(prefix_matches(
+        "/v1/publishers/*/books",
+        "/v1/publishers/bar/books"
+    ));
+    assert!(prefix_matches(
+        "/v1/publishers/*/books",
+        "/v1/publishers/foo/books/book1"
+    ));
 
-#[test]
-fn test_single_digit_cc_number() {
-    assert!(!luhn("0"));
-}
-
-#[test]
-fn test_two_digit_cc_number() {
-    assert!(luhn(" 0 0 "));
-}
-
-#[test]
-fn test_valid_cc_number() {
-    assert!(luhn("4263 9826 4026 9299"));
-    assert!(luhn("4539 3195 0343 6467"));
-    assert!(luhn("7992 7398 713"));
-}
-
-#[test]
-fn test_invalid_cc_number() {
-    assert!(!luhn("4223 9826 4026 9299"));
-    assert!(!luhn("4539 3195 0343 6476"));
-    assert!(!luhn("8273 1232 7352 0569"));
+    assert!(!prefix_matches("/v1/publishers/*/books", "/v1/publishers"));
+    assert!(!prefix_matches(
+        "/v1/publishers/*/books",
+        "/v1/publishers/foo/booksByAuthor"
+    ));
 }
 
 #[allow(dead_code)]
 fn main() {}
-
