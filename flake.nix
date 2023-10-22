@@ -34,19 +34,18 @@
                 (mkOverlay nixpkgs-unstable "unstable")
               ];
             }));
-    in {
+    in
+    {
       devShells = forAllSystems (pkgs: {
         default =
-          let
-            lint = with pkgs; [ nixpkgs-fmt rustfmt ];
-            ls = with pkgs;[ nil rust-analyzer ];
-            deps = with pkgs; ([ cargo rustc cargo-edit ] ++ (lib.optional pkgs.stdenvNoCC.isDarwin [ darwin.apple_sdk.frameworks.Security libiconv ]));
-          in
           pkgs.mkShell
             {
               name = "comprehensive-rust";
-
-              packages = lint ++ ls ++ deps;
+              packages = with pkgs; [
+                cargo
+                cargo-edit
+                rustc
+              ] ++ (lib.optional pkgs.stdenvNoCC.isDarwin [ darwin.apple_sdk.frameworks.Security libiconv ]);
             };
       });
       formatter = forAllSystems (pkgs: pkgs.nixpkgs-fmt);
