@@ -1,194 +1,112 @@
-use std::{f64::consts::PI, ops::Add, slice::Iter};
+mod ffi {
+    use std::os::raw::{c_char, c_int};
+    #[cfg(not(target_os = "macos"))]
+    use std::os::raw::{c_long, c_uchar, c_ulong, c_ushort};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Point {
-    x: i64,
-    y: i64,
+    // Opaque type. See https://doc.rust-lang.org/nomicon/ffi.html.
+    #[repr(C)]
+    pub struct DIR {
+        _data: [u8; 0],
+        _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
+    }
+
+    // Layout according to the Linux man page for readdir(3), where ino_t and
+    // off_t are resolved according to the definitions in
+    // /usr/include/x86_64-linux-gnu/{sys/types.h, bits/typesizes.h}.
+    #[cfg(not(target_os = "macos"))]
+    #[repr(C)]
+    pub struct dirent {
+        pub d_ino: c_ulong,
+        pub d_off: c_long,
+        pub d_reclen: c_ushort,
+        pub d_type: c_uchar,
+        pub d_name: [c_char; 256],
+    }
+
+    // Layout according to the macOS man page for dir(5).
+    #[cfg(all(target_os = "macos"))]
+    #[repr(C)]
+    pub struct dirent {
+        pub d_fileno: u64,
+        pub d_seekoff: u64,
+        pub d_reclen: u16,
+        pub d_namlen: u16,
+        pub d_type: u8,
+        pub d_name: [c_char; 1024],
+    }
+
+    extern "C" {
+        pub fn opendir(s: *const c_char) -> *mut DIR;
+
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        pub fn readdir(s: *mut DIR) -> *const dirent;
+
+        // See https://github.com/rust-lang/libc/issues/414 and the section on
+        // _DARWIN_FEATURE_64_BIT_INODE in the macOS man page for stat(2).
+        //
+        // "Platforms that existed before these updates were available" refers
+        // to macOS (as opposed to iOS / wearOS / etc.) on Intel and PowerPC.
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        #[link_name = "readdir$INODE64"]
+        pub fn readdir(s: *mut DIR) -> *const dirent;
+
+        pub fn closedir(s: *mut DIR) -> c_int;
+    }
 }
 
-impl Point {
-    fn new(x: i64, y: i64) -> Self {
-        Point { x, y }
-    }
+use std::ffi::{CStr, CString, OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 
-    fn magnitude(&self) -> f64 {
-        self.dist(Point::default())
-    }
+#[derive(Debug)]
+struct DirectoryIterator {
+    path: CString,
+    dir: *mut ffi::DIR,
+}
 
-    fn dist(&self, p: Point) -> f64 {
-        let x = self.x - p.x;
-        let y = self.y - p.y;
-        let sum = x * x + y * y;
-        (sum as f64).sqrt()
+impl DirectoryIterator {
+    fn new(path: &str) -> Result<DirectoryIterator, String> {
+        // Call opendir and return a Ok value if that worked,
+        // otherwise return Err with a message.
+        let path = CString::new(path.as_bytes()).map_err(|e| e.to_string())?;
+        let dir = unsafe { ffi::opendir(path.as_ptr()) };
+        if dir.is_null() {
+            return Err(format!("dir pointer is null for: {:?}", path));
+        }
+        Ok(DirectoryIterator { path, dir })
     }
 }
 
-impl Add for Point {
-    type Output = Point;
+impl Iterator for DirectoryIterator {
+    type Item = OsString;
+    fn next(&mut self) -> Option<OsString> {
+        // Keep calling readdir until we get a NULL pointer back.
+        let dirent = unsafe { ffi::readdir(self.dir) };
+        if dirent.is_null() {
+            return None;
+        }
+        let dname = unsafe {
+            let dname = (*dirent).d_name;
+            CStr::from_ptr(dname.as_ptr())
+        };
 
-    fn add(self, rhs: Self) -> Self::Output {
-        Point {
-            x: self.x + rhs.x,
-            y: self.y + rhs.y,
+        let osstr = OsStr::from_bytes(dname.to_bytes());
+        Some(osstr.to_owned())
+    }
+}
+
+impl Drop for DirectoryIterator {
+    fn drop(&mut self) {
+        // Call closedir as needed.
+        if !self.dir.is_null() {
+            if unsafe { ffi::closedir(self.dir) } != 0 {
+                panic!("cannot close: {:?}", self.path);
+            }
         }
     }
 }
 
-pub struct Polygon {
-    points: Vec<Point>,
+fn main() -> Result<(), String> {
+    let iter = DirectoryIterator::new(".")?;
+    println!("files: {:#?}", iter.collect::<Vec<_>>());
+    Ok(())
 }
-
-impl Polygon {
-    fn new() -> Self {
-        Polygon { points: Vec::new() }
-    }
-
-    fn add_point(&mut self, p: Point) {
-        self.points.push(p)
-    }
-
-    fn left_most_point(&self) -> Option<Point> {
-        self.points.iter().min_by_key(|p| p.x).copied()
-    }
-
-    fn iter(&self) -> Iter<Point> {
-        self.points.iter()
-    }
-
-    fn perimeter(&self) -> f64 {
-        if self.points.len() <= 1 {
-            return 0.0;
-        }
-
-        if self.points.len() == 2 {
-            let first = self.points[0];
-            let last = self.points[1];
-            return first.dist(last);
-        }
-
-        let mut perimeter = 0.0;
-        let mut prev_point = self.points.first().copied().unwrap();
-        for point in self.points.iter().skip(1).copied() {
-            perimeter += prev_point.dist(point);
-            prev_point = point;
-        }
-
-        perimeter += self.points[0].dist(self.points[self.points.len() - 1]);
-        perimeter
-    }
-}
-
-pub struct Circle {
-    center: Point,
-    radius: usize,
-}
-
-impl Circle {
-    fn new(center: Point, radius: usize) -> Self {
-        Circle { center, radius }
-    }
-
-    fn perimeter(&self) -> f64 {
-        2.0 * (self.radius as f64) * PI
-    }
-}
-
-pub enum Shape {
-    Polygon(Polygon),
-    Circle(Circle),
-}
-
-impl Shape {
-    fn perimeter(&self) -> f64 {
-        match self {
-            Shape::Polygon(p) => p.perimeter(),
-            Shape::Circle(c) => c.perimeter(),
-        }
-    }
-}
-
-impl From<Polygon> for Shape {
-    fn from(value: Polygon) -> Self {
-        Shape::Polygon(value)
-    }
-}
-
-impl From<Circle> for Shape {
-    fn from(value: Circle) -> Self {
-        Shape::Circle(value)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn round_two_digits(x: f64) -> f64 {
-        (x * 100.0).round() / 100.0
-    }
-
-    #[test]
-    fn test_point_magnitude() {
-        let p1 = Point::new(12, 13);
-        assert_eq!(round_two_digits(p1.magnitude()), 17.69);
-    }
-
-    #[test]
-    fn test_point_dist() {
-        let p1 = Point::new(10, 10);
-        let p2 = Point::new(14, 13);
-        assert_eq!(round_two_digits(p1.dist(p2)), 5.00);
-    }
-
-    #[test]
-    fn test_point_add() {
-        let p1 = Point::new(16, 16);
-        let p2 = p1 + Point::new(-4, 3);
-        assert_eq!(p2, Point::new(12, 19));
-    }
-
-    #[test]
-    fn test_polygon_left_most_point() {
-        let p1 = Point::new(12, 13);
-        let p2 = Point::new(16, 16);
-
-        let mut poly = Polygon::new();
-        poly.add_point(p1);
-        poly.add_point(p2);
-        assert_eq!(poly.left_most_point(), Some(p1));
-    }
-
-    #[test]
-    fn test_polygon_iter() {
-        let p1 = Point::new(12, 13);
-        let p2 = Point::new(16, 16);
-
-        let mut poly = Polygon::new();
-        poly.add_point(p1);
-        poly.add_point(p2);
-
-        let points = poly.iter().cloned().collect::<Vec<_>>();
-        assert_eq!(points, vec![Point::new(12, 13), Point::new(16, 16)]);
-    }
-
-    #[test]
-    fn test_shape_perimeters() {
-        let mut poly = Polygon::new();
-        poly.add_point(Point::new(12, 13));
-        poly.add_point(Point::new(17, 11));
-        poly.add_point(Point::new(16, 16));
-        let shapes = vec![
-            Shape::from(poly),
-            Shape::from(Circle::new(Point::new(10, 20), 5)),
-        ];
-        let perimeters = shapes
-            .iter()
-            .map(Shape::perimeter)
-            .map(round_two_digits)
-            .collect::<Vec<_>>();
-        assert_eq!(perimeters, vec![15.48, 31.42]);
-    }
-}
-
-#[allow(dead_code)]
-fn main() {}
