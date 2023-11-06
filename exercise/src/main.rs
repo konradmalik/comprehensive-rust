@@ -1,27 +1,19 @@
-use std::{thread, time::Duration};
+use std::{sync::mpsc, thread};
 
 fn main() {
-    let handle = thread::spawn(|| {
+    let (tx, rx) = mpsc::sync_channel(3);
+
+    thread::spawn(move || {
         for i in 1..10 {
-            println!("thread count: {}", i);
-            thread::sleep(Duration::from_millis(5));
+            println!("sending {}", i);
+            tx.send(i).unwrap();
+            println!("sent {}", i);
         }
     });
 
-    for i in 1..5 {
-        println!("main count: {}", i);
-        thread::sleep(Duration::from_millis(5));
+    while let Ok(v) = rx.recv() {
+        println!("received {}", v);
     }
 
-    handle.join().unwrap();
-
-    let s = "yo! scoped thread!";
-
-    thread::scope(|scope| {
-        scope.spawn(|| {
-            for i in 1..10 {
-                println!("{}: {}", i, s);
-            }
-        });
-    });
+    println!("done");
 }
