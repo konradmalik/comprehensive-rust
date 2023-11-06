@@ -1,19 +1,20 @@
-use std::{sync::mpsc, thread};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 fn main() {
-    let (tx, rx) = mpsc::sync_channel(3);
+    let v = Arc::new(Mutex::new(vec![10, 20, 30]));
 
-    thread::spawn(move || {
-        for i in 1..10 {
-            println!("sending {}", i);
-            tx.send(i).unwrap();
-            println!("sent {}", i);
-        }
+    let v2 = Arc::clone(&v);
+    let handle = thread::spawn(move || {
+        let mut guard = v2.lock().unwrap();
+        guard.push(10);
     });
 
-    while let Ok(v) = rx.recv() {
-        println!("received {}", v);
+    {
+        let mut guard = v.lock().unwrap();
+        guard.push(1000);
     }
 
-    println!("done");
+    handle.join().unwrap();
+    println!("v: {v:?}");
 }
