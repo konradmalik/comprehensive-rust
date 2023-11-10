@@ -45,7 +45,12 @@
                 cargo
                 cargo-edit
                 rustc
-              ] ++ (lib.optional pkgs.stdenvNoCC.isDarwin [ darwin.apple_sdk.frameworks.Security libiconv ]);
+              ] ++
+              (lib.optional pkgs.stdenvNoCC.isDarwin [
+                darwin.apple_sdk.frameworks.Security
+                darwin.apple_sdk.frameworks.SystemConfiguration
+                libiconv
+              ]);
             };
       });
       formatter = forAllSystems (pkgs: pkgs.nixpkgs-fmt);
