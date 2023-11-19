@@ -1,47 +1,55 @@
-use tokio::sync::oneshot::{self, Receiver};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::spawn;
 use tokio::time::{sleep, Duration};
 
-#[derive(Debug, PartialEq)]
-enum Animal {
-    Cat { name: String },
-    Dog { name: String },
+// A work item. In this case, just sleep for the given time and respond
+// with a message on the `respond_on` channel.
+#[derive(Debug)]
+struct Work {
+    input: u32,
+    respond_on: oneshot::Sender<u32>,
 }
 
-async fn first_animal_to_finish_race(
-    cat_rcv: Receiver<String>,
-    dog_rcv: Receiver<String>,
-    race_rcv: Receiver<()>,
-) -> Option<Animal> {
-    tokio::select! {
-        cat_name = cat_rcv => Some(Animal::Cat { name:cat_name.expect("cannot receive cat name")}),
-        dog_name = dog_rcv => Some(Animal::Dog { name:dog_name.expect("cannot receive dog name")}),
-        _ = race_rcv => None,
+// A worker which listens for work on a queue and performs it.
+async fn worker(mut work_queue: mpsc::Receiver<Work>) {
+    let mut timeout_fut = Box::pin(sleep(Duration::from_millis(100)));
+    let mut iterations = 0;
+    loop {
+        tokio::select! {
+            Some(work) = work_queue.recv() => {
+                sleep(Duration::from_millis(10)).await; // Pretend to work.
+                work.respond_on
+                    .send(work.input * 1000)
+                    .expect("failed to send response");
+                iterations += 1;
+            },
+            _ = &mut timeout_fut => {
+                timeout_fut = Box::pin(sleep(Duration::from_millis(100)));
+                println!("{}",iterations);
+            },
+        }
     }
+}
+
+// A requester which requests work and waits for it to complete.
+async fn do_work(work_queue: &mpsc::Sender<Work>, input: u32) -> u32 {
+    let (tx, rx) = oneshot::channel();
+    work_queue
+        .send(Work {
+            input,
+            respond_on: tx,
+        })
+        .await
+        .expect("failed to send on work queue");
+    rx.await.expect("failed waiting for response")
 }
 
 #[tokio::main]
 async fn main() {
-    let (cat_sender, cat_receiver) = oneshot::channel();
-    let (dog_sender, dog_receiver) = oneshot::channel();
-    let (race_sender, race_receiver) = oneshot::channel();
-    tokio::spawn(async move {
-        sleep(Duration::from_millis(500)).await;
-        cat_sender
-            .send(String::from("Felix"))
-            .expect("Problem sending cat");
-    });
-    tokio::spawn(async move {
-        sleep(Duration::from_millis(50)).await;
-        dog_sender
-            .send(String::from("Rex"))
-            .expect("Problem sending dog");
-    });
-    tokio::spawn(async move {
-        sleep(Duration::from_millis(50)).await;
-        race_sender.send(()).expect("Problem sending race finish");
-    });
-
-    let winner = first_animal_to_finish_race(cat_receiver, dog_receiver, race_receiver).await;
-
-    println!("Winner is {winner:?}");
+    let (tx, rx) = mpsc::channel(10);
+    spawn(worker(rx));
+    for i in 0..100 {
+        let resp = do_work(&tx, i).await;
+        println!("work result for iteration {i}: {resp}");
+    }
 }
