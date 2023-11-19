@@ -1,37 +1,27 @@
-use std::io::Error;
+use tokio::sync::mpsc::{self, Receiver};
 
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+async fn ping_handler(mut input: Receiver<()>) {
+    let mut count: usize = 0;
 
-async fn handle_connection(socket: &mut TcpStream) -> Result<(), Error> {
-    socket.write_all(b"Who are you?\n").await?;
+    while let Some(_) = input.recv().await {
+        count += 1;
+        println!("Received {count} pings so far.");
+    }
 
-    let mut buf = vec![0; 1024];
-    let n = socket.read(&mut buf).await?;
-    let reply = {
-        let name = std::str::from_utf8(&buf[..n]).unwrap().trim();
-        format!("Thanks for dialing in, {name}!\n")
-    };
-
-    socket.write_all(reply.as_bytes()).await?;
-    Ok(())
+    println!("ping_handler complete");
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6142").await?;
-    println!("listening on port 6142");
-
-    loop {
-        let (mut socket, addr) = listener.accept().await?;
-
-        println!("connection from {addr:?}");
-
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(&mut socket).await {
-                println!("socket error: {}", e);
-                return;
-            };
-        });
+async fn main() {
+    let (sender, receiver) = mpsc::channel(3);
+    let ping_handler_task = tokio::spawn(ping_handler(receiver));
+    for i in 0..10 {
+        sender.send(()).await.expect("Failed to send ping.");
+        println!("Sent {} pings so far.", i + 1);
     }
+
+    drop(sender);
+    ping_handler_task
+        .await
+        .expect("Something went wrong in ping handler task.");
 }
