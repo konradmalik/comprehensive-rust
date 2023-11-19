@@ -1,29 +1,47 @@
-use anyhow::Result;
-use futures::{future, join};
-use reqwest;
-use std::{collections::HashMap, time::Duration};
+use tokio::sync::oneshot::{self, Receiver};
+use tokio::time::{sleep, Duration};
 
-async fn size_of_page(url: &str) -> Result<usize> {
-    let resp = reqwest::get(url).await?;
-    Ok(resp.text().await?.len())
+#[derive(Debug, PartialEq)]
+enum Animal {
+    Cat { name: String },
+    Dog { name: String },
 }
 
-async fn just_sleep() -> Result<()> {
-    Ok(tokio::time::sleep(Duration::from_secs(2)).await)
+async fn first_animal_to_finish_race(
+    cat_rcv: Receiver<String>,
+    dog_rcv: Receiver<String>,
+    race_rcv: Receiver<()>,
+) -> Option<Animal> {
+    tokio::select! {
+        cat_name = cat_rcv => Some(Animal::Cat { name:cat_name.expect("cannot receive cat name")}),
+        dog_name = dog_rcv => Some(Animal::Dog { name:dog_name.expect("cannot receive dog name")}),
+        _ = race_rcv => None,
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    let urls: [&str; 4] = [
-        "https://google.com",
-        "https://httpbin.org/ip",
-        "https://play.rust-lang.org/",
-        "BAD_URL",
-    ];
-    let futures_iter = urls.into_iter().map(size_of_page);
-    let results = join!(future::join_all(futures_iter), just_sleep());
-    let page_sizes_dict: HashMap<&str, Result<usize>> =
-        urls.into_iter().zip(results.0.into_iter()).collect();
-    println!("slept {:?}", results.1);
-    println!("{:?}", page_sizes_dict);
+    let (cat_sender, cat_receiver) = oneshot::channel();
+    let (dog_sender, dog_receiver) = oneshot::channel();
+    let (race_sender, race_receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(500)).await;
+        cat_sender
+            .send(String::from("Felix"))
+            .expect("Problem sending cat");
+    });
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(50)).await;
+        dog_sender
+            .send(String::from("Rex"))
+            .expect("Problem sending dog");
+    });
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(50)).await;
+        race_sender.send(()).expect("Problem sending race finish");
+    });
+
+    let winner = first_animal_to_finish_race(cat_receiver, dog_receiver, race_receiver).await;
+
+    println!("Winner is {winner:?}");
 }
