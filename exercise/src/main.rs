@@ -1,55 +1,54 @@
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::spawn;
+use async_trait::async_trait;
+use std::time::Instant;
 use tokio::time::{sleep, Duration};
 
-// A work item. In this case, just sleep for the given time and respond
-// with a message on the `respond_on` channel.
-#[derive(Debug)]
-struct Work {
-    input: u32,
-    respond_on: oneshot::Sender<u32>,
+#[async_trait]
+trait Sleeper {
+    async fn sleep(&self);
 }
 
-// A worker which listens for work on a queue and performs it.
-async fn worker(mut work_queue: mpsc::Receiver<Work>) {
-    let mut timeout_fut = Box::pin(sleep(Duration::from_millis(100)));
-    let mut iterations = 0;
-    loop {
-        tokio::select! {
-            Some(work) = work_queue.recv() => {
-                sleep(Duration::from_millis(10)).await; // Pretend to work.
-                work.respond_on
-                    .send(work.input * 1000)
-                    .expect("failed to send response");
-                iterations += 1;
-            },
-            _ = &mut timeout_fut => {
-                timeout_fut = Box::pin(sleep(Duration::from_millis(100)));
-                println!("{}",iterations);
-            },
+struct FixedSleeper {
+    sleep_ms: u64,
+}
+
+struct RandomSleeper {
+    max_sleep_ms: u64,
+}
+
+#[async_trait]
+impl Sleeper for FixedSleeper {
+    async fn sleep(&self) {
+        sleep(Duration::from_millis(self.sleep_ms)).await;
+    }
+}
+
+#[async_trait]
+impl Sleeper for RandomSleeper {
+    async fn sleep(&self) {
+        sleep(Duration::from_millis(
+            rand::random::<u64>() % self.max_sleep_ms,
+        ))
+        .await;
+    }
+}
+
+async fn run_all_sleepers_multiple_times(sleepers: Vec<Box<dyn Sleeper>>, n_times: usize) {
+    for _ in 0..n_times {
+        println!("running all sleepers..");
+        for sleeper in &sleepers {
+            let start = Instant::now();
+            sleeper.sleep().await;
+            println!("slept for {}ms", start.elapsed().as_millis());
         }
     }
 }
 
-// A requester which requests work and waits for it to complete.
-async fn do_work(work_queue: &mpsc::Sender<Work>, input: u32) -> u32 {
-    let (tx, rx) = oneshot::channel();
-    work_queue
-        .send(Work {
-            input,
-            respond_on: tx,
-        })
-        .await
-        .expect("failed to send on work queue");
-    rx.await.expect("failed waiting for response")
-}
-
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel(10);
-    spawn(worker(rx));
-    for i in 0..100 {
-        let resp = do_work(&tx, i).await;
-        println!("work result for iteration {i}: {resp}");
-    }
+    let sleepers: Vec<Box<dyn Sleeper>> = vec![
+        Box::new(FixedSleeper { sleep_ms: 50 }),
+        Box::new(FixedSleeper { sleep_ms: 100 }),
+        Box::new(RandomSleeper { max_sleep_ms: 5000 }),
+    ];
+    run_all_sleepers_multiple_times(sleepers, 5).await;
 }
