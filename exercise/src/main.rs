@@ -1,54 +1,64 @@
-use async_trait::async_trait;
-use std::time::Instant;
-use tokio::time::{sleep, Duration};
+use std::io::{self, ErrorKind};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
-#[async_trait]
-trait Sleeper {
-    async fn sleep(&self);
+struct LinesReader {
+    stream: DuplexStream,
+    bytes: Vec<u8>,
+    buf: [u8; 1],
 }
 
-struct FixedSleeper {
-    sleep_ms: u64,
-}
-
-struct RandomSleeper {
-    max_sleep_ms: u64,
-}
-
-#[async_trait]
-impl Sleeper for FixedSleeper {
-    async fn sleep(&self) {
-        sleep(Duration::from_millis(self.sleep_ms)).await;
-    }
-}
-
-#[async_trait]
-impl Sleeper for RandomSleeper {
-    async fn sleep(&self) {
-        sleep(Duration::from_millis(
-            rand::random::<u64>() % self.max_sleep_ms,
-        ))
-        .await;
-    }
-}
-
-async fn run_all_sleepers_multiple_times(sleepers: Vec<Box<dyn Sleeper>>, n_times: usize) {
-    for _ in 0..n_times {
-        println!("running all sleepers..");
-        for sleeper in &sleepers {
-            let start = Instant::now();
-            sleeper.sleep().await;
-            println!("slept for {}ms", start.elapsed().as_millis());
+impl LinesReader {
+    fn new(stream: DuplexStream) -> Self {
+        Self {
+            stream,
+            bytes: Vec::new(),
+            buf: [0],
         }
     }
+
+    async fn next(&mut self) -> io::Result<Option<String>> {
+        while self.stream.read(&mut self.buf[..]).await? != 0 {
+            self.bytes.push(self.buf[0]);
+            if self.buf[0] == b'\n' {
+                break;
+            }
+        }
+        let raw = std::mem::take(&mut self.bytes);
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let s = String::from_utf8(raw)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidData, "not UTF-8"))?;
+        Ok(Some(s))
+    }
+}
+
+async fn slow_copy(source: String, mut dest: DuplexStream) -> std::io::Result<()> {
+    for b in source.bytes() {
+        dest.write_u8(b).await?;
+        tokio::time::sleep(Duration::from_millis(10)).await
+    }
+    Ok(())
 }
 
 #[tokio::main]
-async fn main() {
-    let sleepers: Vec<Box<dyn Sleeper>> = vec![
-        Box::new(FixedSleeper { sleep_ms: 50 }),
-        Box::new(FixedSleeper { sleep_ms: 100 }),
-        Box::new(RandomSleeper { max_sleep_ms: 5000 }),
-    ];
-    run_all_sleepers_multiple_times(sleepers, 5).await;
+async fn main() -> std::io::Result<()> {
+    let (client, server) = tokio::io::duplex(5);
+    let handle = tokio::spawn(slow_copy("hi\nthere\n".to_owned(), client));
+
+    let mut lines = LinesReader::new(server);
+    let mut interval = tokio::time::interval(Duration::from_millis(60));
+    loop {
+        tokio::select! {
+            _ = interval.tick() => println!("tick!"),
+            line = lines.next() => if let Some(l) = line? {
+                print!("{}", l)
+            } else {
+                break
+            },
+        }
+    }
+    handle.await.unwrap()?;
+    Ok(())
 }
